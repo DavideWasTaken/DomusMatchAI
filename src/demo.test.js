@@ -1,0 +1,109 @@
+import test from "node:test";
+import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import { createContext, runInContext } from "node:vm";
+import { createDemoAdapter } from "./demo.js";
+import { scoreMatch } from "./matching.js";
+
+function uiContext(extra = {}) {
+  // Exercise the actual UI functions without starting a browser or a backend.
+  const source = readFileSync(new URL("./main.js", import.meta.url), "utf8")
+    .replace(/^import[\s\S]*?;\s*/gm, "")
+    .split("start().catch(")[0];
+  const context = createContext({
+    window: {}, document: { querySelector: () => ({}), addEventListener() {} },
+    localScoreMatch: scoreMatch, console, ...extra
+  });
+  runInContext(source, context);
+  return context;
+}
+
+test("copy helpers and archive badges recompute current matching instead of stale saved scores", async () => {
+  const demo = createDemoAdapter();
+  const clients = await demo.storage.list("clients");
+  const properties = await demo.storage.list("properties");
+  const context = uiContext({ clients, properties });
+  runInContext(`state.clients = clients; state.properties = properties;
+    state.matches = [{id: clients[0].id + "|" + properties[2].id,
+      clientId: clients[0].id, propertyId: properties[2].id, score: 99}];`, context);
+  const hydrated = runInContext("hydratedMatch(state.matches[0].id)", context);
+  assert.ok(hydrated.score < 45);
+  assert.equal(runInContext("bestScoreForProperty(properties[2].id)", context), Math.max(...clients.map(c => scoreMatch(c, properties[2], { budgetTolerance: 7 }).score)));
+  runInContext("state.properties = []", context);
+  assert.equal(runInContext("hydratedMatch(state.matches[0].id)", context), null);
+});
+
+test("an in-flight cache refresh cannot restore records after the session is cleared", async () => {
+  let release;
+  const waiting = new Promise(resolve => { release = resolve; });
+  const context = uiContext({ storage: { list: async () => { await waiting; return [{ id: "late-client", name: "Late" }]; } } });
+  runInContext("state.user = {uid: 'first-session'}", context);
+  const refresh = runInContext("refreshFromCache()", context);
+  runInContext("clearSessionData()", context);
+  release();
+  await refresh;
+  assert.equal(runInContext("state.clients.length", context), 0);
+  assert.equal(runInContext("state.selectedClientId", context), "");
+});
+
+test("demo starts with fictional data and real matching distinguishes suitable properties", async () => {
+  const demo = createDemoAdapter();
+  assert.equal(demo.demoMode, true);
+  const clients = await demo.storage.list("clients");
+  const properties = await demo.storage.list("properties");
+  assert.ok(clients.length >= 3 && properties.length >= 3);
+  assert.ok(clients.every(c => c.email.endsWith("@example.com") && !/\d/.test(c.phone)));
+  const strong = scoreMatch(clients[0], properties[0]);
+  const weak = scoreMatch(clients[0], properties[2]);
+  assert.ok(strong.score >= 70, `Suitable sample scored ${strong.score}`);
+  assert.ok(weak.score < 45, `Poor sample scored ${weak.score}`);
+});
+
+test("demo creates, edits and deletes records, notifying active subscribers", async () => {
+  const demo = createDemoAdapter();
+  const changes = [];
+  demo.subscribe((kind, error) => changes.push([kind, error]));
+  assert.deepEqual(changes.map(([kind]) => kind), ["clients", "properties", "matches"]);
+  const saved = await demo.storage.save("clients", { name: "Cliente di prova", comuni: ["Milano"] });
+  assert.ok(saved.id && saved.updatedAt);
+  saved.comuni.push("Torino");
+  const edited = await demo.storage.save("clients", { ...saved, name: "Cliente aggiornato" });
+  assert.equal(edited.id, saved.id);
+  assert.equal((await demo.storage.list("clients")).find(c => c.id === saved.id).name, "Cliente aggiornato");
+  await demo.storage.remove("clients", saved.id);
+  assert.ok(!(await demo.storage.list("clients")).some(c => c.id === saved.id));
+  assert.deepEqual(changes.slice(3).map(([kind]) => kind), ["clients", "clients", "clients"]);
+  demo.stop();
+  await demo.storage.save("matches", { id: "demo-result", score: 80 });
+  assert.equal(changes.length, 6);
+});
+
+test("demo copies cannot mutate stored data and fresh sessions reset changes", async () => {
+  const demo = createDemoAdapter();
+  const rows = await demo.storage.list("clients");
+  const initialName = rows[0].name;
+  rows[0].name = "Mutated";
+  rows[0].comuni.push("Unexpected");
+  const freshRows = await demo.storage.list("clients");
+  assert.equal(freshRows[0].name, initialName);
+  assert.ok(!freshRows[0].comuni.includes("Unexpected"));
+  await demo.storage.remove("clients", rows[0].id);
+  assert.ok((await createDemoAdapter().storage.list("clients")).some(c => c.id === rows[0].id));
+});
+
+test("demo authentication notifies observers and unsubscribes cleanly", async () => {
+  const demo = createDemoAdapter();
+  await demo.initFirebase();
+  const users = [];
+  const unwatch = demo.watchAuth(user => users.push(user));
+  assert.equal(users[0].email, "demo@example.com");
+  await demo.logout();
+  assert.equal(users.at(-1), null);
+  await assert.rejects(demo.storage.save("clients", { name: "Signed out" }), /demo/i);
+  await demo.login();
+  assert.equal(users.at(-1).email, "demo@example.com");
+  unwatch();
+  await demo.logout();
+  assert.equal(users.length, 3);
+  await assert.rejects(demo.storage.list("unknown"), /collection/i);
+});

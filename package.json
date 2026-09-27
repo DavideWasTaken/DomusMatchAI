@@ -1,0 +1,35 @@
+{
+  "name": "domusmatchai",
+  "version": "1.0.0",
+  "author": "Davide Gaglione",
+  "homepage": "https://davide.sh",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "demo": "vite --mode demo",
+    "desktop:dev": "tauri dev",
+    "build": "tauri build",
+    "build:frontend": "vite build",
+    "build:demo": "vite build --mode demo",
+    "preview": "vite preview --host 127.0.0.1",
+    "test": "node --test src/*.test.js",
+    "test:matching": "node --test src/matching.test.js",
+    "test:rules": "firebase emulators:exec --only firestore --project demo-domusmatchai \"node --test tests/firestore.rules.test.js\"",
+    "check": "tauri info"
+  },
+  "dependencies": {
+    "@tauri-apps/api": "^2.2.0",
+    "firebase": "^11.0.0"
+  },
+  "devDependencies": {
+    "@firebase/rules-unit-testing": "^4.0.1",
+    "@tauri-apps/cli": "^2.2.0",
+    "firebase-tools": "^15.31.0",
+    "vite": "^6.4.3"
+  },
+  "description": "A simple shared real-estate workspace with explainable local matching",
+  "engines": {
+    "node": ">=22.0.0"
+  }
+}

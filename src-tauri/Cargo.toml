@@ -1,0 +1,13 @@
+[package]
+name = "domusmatchai"
+version = "1.0.0"
+description = "Simple real-estate workspace with explainable matching"
+homepage = "https://davide.sh"
+authors = ["Davide Gaglione"]
+edition = "2021"
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }

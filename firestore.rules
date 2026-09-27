@@ -1,0 +1,23 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function activeOperator() {
+      return request.auth != null
+        && exists(/databases/$(database)/documents/members/$(request.auth.uid))
+        && get(/databases/$(database)/documents/members/$(request.auth.uid)).data.active == true;
+    }
+    function validWrite() {
+      return request.resource.data.updatedBy == request.auth.uid
+        && request.resource.data.updatedAt is string;
+    }
+    match /members/{uid} {
+      allow get: if request.auth != null && request.auth.uid == uid;
+      allow list, write: if false;
+    }
+    match /{kind}/{id} {
+      allow read, delete: if kind in ['clients', 'properties', 'matches'] && activeOperator();
+      allow create, update: if kind in ['clients', 'properties', 'matches']
+        && activeOperator() && validWrite();
+    }
+  }
+}
