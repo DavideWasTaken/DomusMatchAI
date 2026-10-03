@@ -195,3 +195,45 @@ test("partial cleanup stops ordinary updates and keeps Retry until recovery", as
   assert.equal(runInContext("state.dataLoaded", context), true);
   assert.ok(!runInContext("state.clients", context).some(client => client.id === id));
 });
+
+test("an already accepted refresh cannot erase a later partial-cleanup error", async () => {
+  const demo = createDemoAdapter();
+  const listeners = {};
+  const partial = Object.assign(new Error("Record eliminato. Usa Riprova."), { code: "partial-cleanup" });
+  const context = uiContext({
+    window: { confirm: () => true }, stop() {},
+    storage: { ...demo.storage, async remove(kind, id) {
+      await demo.storage.remove(kind, id);
+      runInContext("handleDataChange('properties', null)", context);
+      // Let refreshFromCache accept this generation before its UI continuation.
+      await Promise.resolve();
+      await Promise.resolve();
+      throw partial;
+    } },
+    document: { querySelector: () => ({}), addEventListener(type, callback) { listeners[type] = callback; } }
+  });
+  runInContext("state.user = {uid: 'demo-operator'}; state.dataLoaded = true; renderShell = () => {}; toast = () => {};", context);
+  await runInContext("refreshFromCache()", context);
+  const id = (await demo.storage.list("clients"))[0].id;
+  await listeners.click({ target: { closest(selector) {
+    return selector === "[data-delete-client]" ? { dataset: { deleteClient: id } } : null;
+  } } });
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(runInContext("state.dataError", context), partial.message);
+  assert.equal(runInContext("state.dataLoaded", context), false);
+});
+
+test("a rejected refresh from an old session cannot clear the new session", async () => {
+  let reject;
+  const waiting = new Promise((_resolve, fail) => { reject = fail; });
+  const context = uiContext({ stop() {}, storage: { list: () => waiting } });
+  runInContext(`state.user = {uid: 'old'}; renderShell = () => {};
+    handleDataChange('clients', null); clearSessionData();
+    state.user = {uid: 'new'}; state.dataLoaded = true;
+    state.clients = [{id: 'new-client'}];`, context);
+  reject(new Error("Old connection failed"));
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(runInContext("state.dataError", context), null);
+  assert.equal(runInContext("state.dataLoaded", context), true);
+  assert.equal(runInContext("state.clients[0]?.id", context), "new-client");
+});

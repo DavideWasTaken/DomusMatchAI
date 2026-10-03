@@ -1158,6 +1158,7 @@ async function refreshFromCache() {
 }
 
 function handleDataChange(_kind, error) {
+  const current = sessionGeneration;
   if (error) {
     stop();
     clearSessionData();
@@ -1166,14 +1167,16 @@ function handleDataChange(_kind, error) {
     return;
   }
   refreshFromCache().then((accepted) => {
-    if (!accepted) return;
+    if (!accepted || current !== sessionGeneration) return;
     const wasLoaded = state.dataLoaded;
     state.dataLoaded = true;
     state.dataError = null;
     const editing = document.activeElement && document.activeElement.matches
       && document.activeElement.matches("input, textarea, select");
     if (!wasLoaded || (!editing && !state.accountOpen)) renderShell();
-  }).catch(error => handleDataChange(_kind, error));
+  }).catch(error => {
+    if (current === sessionGeneration) handleDataChange(_kind, error);
+  });
 }
 
 async function start() {
