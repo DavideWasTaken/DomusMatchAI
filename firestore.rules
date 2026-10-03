@@ -10,6 +10,12 @@ service cloud.firestore {
       return request.resource.data.updatedBy == request.auth.uid
         && request.resource.data.updatedAt is string;
     }
+    function validMatch() {
+      return request.resource.data.clientId is string
+        && request.resource.data.propertyId is string
+        && existsAfter(/databases/$(database)/documents/clients/$(request.resource.data.clientId))
+        && existsAfter(/databases/$(database)/documents/properties/$(request.resource.data.propertyId));
+    }
     match /members/{uid} {
       allow get: if request.auth != null && request.auth.uid == uid;
       allow list, write: if false;
@@ -17,7 +23,7 @@ service cloud.firestore {
     match /{kind}/{id} {
       allow read, delete: if kind in ['clients', 'properties', 'matches'] && activeOperator();
       allow create, update: if kind in ['clients', 'properties', 'matches']
-        && activeOperator() && validWrite();
+        && activeOperator() && validWrite() && (kind != 'matches' || validMatch());
     }
   }
 }

@@ -1384,7 +1384,9 @@ document.addEventListener("click", async (event) => {
   const deleteClient = event.target.closest("[data-delete-client]")?.dataset.deleteClient;
   if (deleteClient) {
     const row = state.clients.find((client) => client.id === deleteClient);
-    await storage.remove("clients", deleteClient, row?._version || null);
+    if (!row || !window.confirm(`Eliminare il cliente "${row.name}" e i suoi match?`)) return;
+    if (operationGeneration !== sessionGeneration) return;
+    await storage.remove("clients", deleteClient);
     await refreshFromCache();
     if (operationGeneration !== sessionGeneration) return;
     state.editingClientId = null;
@@ -1394,7 +1396,9 @@ document.addEventListener("click", async (event) => {
   const deleteProperty = event.target.closest("[data-delete-property]")?.dataset.deleteProperty;
   if (deleteProperty) {
     const row = state.properties.find((property) => property.id === deleteProperty);
-    await storage.remove("properties", deleteProperty, row?._version || null);
+    if (!row || !window.confirm(`Eliminare l'immobile "${row.title}" e i suoi match?`)) return;
+    if (operationGeneration !== sessionGeneration) return;
+    await storage.remove("properties", deleteProperty);
     await refreshFromCache();
     if (operationGeneration !== sessionGeneration) return;
     state.editingPropertyId = null;
@@ -1402,6 +1406,16 @@ document.addEventListener("click", async (event) => {
     renderShell();
   }
   } catch (error) {
+    if (error?.code === "partial-cleanup" && operationGeneration === sessionGeneration) {
+      await refreshFromCache();
+      if (operationGeneration !== sessionGeneration) return;
+      state.editingClientId = null;
+      state.editingPropertyId = null;
+      clearClientDrafts();
+      clearPropertyDrafts();
+      state.dataError = error.message;
+      renderShell();
+    }
     if (operationGeneration === sessionGeneration) toast(`Operazione non riuscita: ${error?.message || error}`);
   }
 });

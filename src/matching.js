@@ -59,6 +59,16 @@ const SYNONYMS = new Map([
   ["ascensori", "ascensore"]
 ]);
 
+const TERRACE_QUALITIES = "grande|ampio|ampia|abitabile|vivibile|spazioso|spaziosa";
+const AMENITY_PATTERNS = {
+  terrace: "terrazz\\w*|spazio esterno",
+  garden: "giardino|verde privato",
+  lift: "ascensore",
+  parking: "box|garage|posto auto",
+  bright: "luminos\\w*|esposizione (?:sud|est|ovest)",
+  quiet: "tranquill\\w*|silenzios\\w*"
+};
+
 function normalizeText(text = "") {
   return String(text)
     .toLowerCase()
@@ -74,7 +84,15 @@ function normalizeText(text = "") {
 
 function tokensFor(text = "") {
   const normalized = normalizeText(text);
-  return (normalized.match(/[\p{L}\p{N}]+/gu) || [])
+  let comparable = normalized;
+  // Remove the complete absent feature, including multiword aliases and
+  // positive synonyms elsewhere, before words can earn similarity credit.
+  for (const pattern of Object.values(AMENITY_PATTERNS)) {
+    if (featurePresence(normalized, pattern) === false) {
+      comparable = comparable.replace(new RegExp(`\\b(?:${pattern})\\b`, "g"), " ");
+    }
+  }
+  return (comparable.match(/[\p{L}\p{N}]+/gu) || [])
     .filter((token) => featurePresence(normalized, token) !== false)
     .map((token) => SYNONYMS.get(token) || token)
     .filter((token) => token.length > 2 && !STOPWORDS.has(token));
@@ -88,7 +106,7 @@ function featurePresence(text, pattern) {
   for (const mention of mentions) {
     const before = text.slice(0, mention.index);
     const after = text.slice(mention.index + mention[0].length);
-    if (/\b(?:senza|no|non|niente|privo di|priva di|manca|mancano)\s+(?:(?:un|una|il|la)\s+)?$/.test(before) ||
+    if (/\b(?:senza|no|non|niente|privo di|priva di|manca|mancano|non ha|non dispone di|non e presente|non e dotat[oa] di)\s+(?:(?:un|una|il|la|lo|l)\s+)?$/.test(before) ||
         /^\s+(?:assente|assenti|non presente|non presenti|non disponibile|non necessario|non obbligatorio)\b/.test(after)) return false;
   }
   return true;
@@ -121,6 +139,33 @@ function cosineSimilarity(leftText = "", rightText = "") {
   }
   if (!leftNorm || !rightNorm) return 0;
   return dot / (Math.sqrt(leftNorm) * Math.sqrt(rightNorm));
+}
+
+function saleAmount(text, sharedUnit = "") {
+  const thousands = /k\b|mila\b/.test(text) || (!/euro\b/.test(text) && /k\b|mila\b/.test(sharedUnit));
+  const value = Number(text.replace(/\D/g, "")) * (thousands ? 1000 : 1);
+  return value >= 20000 ? value : null;
+}
+
+function budgetBounds(text) {
+  const number = String.raw`(?:\d{1,3}(?:[. ]\d{3})+|\d{2,7})`;
+  const amount = String.raw`(?:euro\s+)?${number}\s*(?:k|mila|euro)?`;
+  const currencyAmount = String.raw`(?:euro\s+${number}|${number}\s*(?:k|mila|euro))`;
+  const range = text.match(new RegExp(String.raw`\bbudget\s+(?:(?:da|tra|fra)\s+)?(${amount})\s*(?:-|/|a|e|ed)\s*(${amount})\b`));
+  if (range) {
+    const min = saleAmount(range[1], range[2]);
+    const max = saleAmount(range[2]);
+    if (min && max) return { min: Math.min(min, max), max: Math.max(min, max) };
+  }
+  const bound = (words) => {
+    const match = text.match(new RegExp(String.raw`\b(?:budget|prezzo)\s+(?:${words})\s+(${amount})\b|\b(?:${words})\s+(${currencyAmount})\b`));
+    return match ? saleAmount(match[1] || match[2]) : null;
+  };
+  const min = bound("minimo|min|almeno|da");
+  let max = bound("massimo|max|fino a|non oltre");
+  const plain = text.match(new RegExp(String.raw`\bbudget\s+(${amount})\b`));
+  if (!min && !max && plain) max = saleAmount(plain[1]);
+  return { min, max };
 }
 
 export function extractFeatures(text = "") {
@@ -159,21 +204,25 @@ export function extractFeatures(text = "") {
       : { monolocale: 1, bilocale: 2, trilocale: 3, quadrilocale: 4, pentalocale: 5 }[rooms[1]];
   }
 
+  // Keep explicit terrace measurements out of the property's surface group.
+  const terraceAreaPattern = new RegExp(String.raw`\bterrazz\w*\s+(?:(?:${TERRACE_QUALITIES})\s+)*(?:(?:di|da)\s+)?(\d{1,3})\s*(?:mq|m2)\b|\b(\d{1,3})\s*(?:mq|m2)\s+di\s+terrazz\w*\b`, "g");
+  const terraceAreas = [...t.matchAll(terraceAreaPattern)];
+  const surfaceText = t.replace(terraceAreaPattern, " ");
   const sqmRange =
-    t.match(/\b(?:da\s+)?(\d{2,4})\s*(?:-|\/)\s*(\d{2,4})\s*(?:mq|m2|m²)\b/) ||
-    t.match(/\b(?:da\s+)?(\d{2,4})\s+a\s+(\d{2,4})\s*(?:mq|m2|m²)\b/) ||
-    t.match(/\btra\s+(\d{2,4})\s+(?:e|ed)\s+(\d{2,4})\s*(?:mq|m2|m²)\b/);
+    surfaceText.match(/\b(?:da\s+)?(\d{2,4})\s*(?:-|\/)\s*(\d{2,4})\s*(?:mq|m2|m²)\b/) ||
+    surfaceText.match(/\b(?:da\s+)?(\d{2,4})\s+a\s+(\d{2,4})\s*(?:mq|m2|m²)\b/) ||
+    surfaceText.match(/\btra\s+(\d{2,4})\s+(?:e|ed)\s+(\d{2,4})\s*(?:mq|m2|m²)\b/);
   if (sqmRange) {
     const values = [Number(sqmRange[1]), Number(sqmRange[2])].sort((a, b) => a - b);
     f.sqmMin = values[0];
     f.sqmMax = values[1];
   } else {
-    const sqm = t.match(/(\d{2,4})\s*(?:mq|m2|m²)/);
+    const sqm = surfaceText.match(/(\d{2,4})\s*(?:mq|m2|m²)/);
     if (sqm) f.sqm = Number(sqm[1]);
   }
-  const sqmMin = t.match(/\b(?:almeno|minimo|min|da)\s+(\d{2,4})\s*(?:mq|m2|m²)\b/);
+  const sqmMin = surfaceText.match(/\b(?:almeno|minimo|min|da)\s+(\d{2,4})\s*(?:mq|m2|m²)\b/);
   if (sqmMin) f.sqmMin = Number(sqmMin[1]);
-  const sqmMax = t.match(/\b(?:massimo|max|fino a|non oltre)\s+(\d{2,4})\s*(?:mq|m2|m²)\b/);
+  const sqmMax = surfaceText.match(/\b(?:massimo|max|fino a|non oltre)\s+(\d{2,4})\s*(?:mq|m2|m²)\b/);
   if (sqmMax) f.sqmMax = Number(sqmMax[1]);
   if (f.sqmMin || f.sqmMax) f.sqm = null;
 
@@ -182,8 +231,10 @@ export function extractFeatures(text = "") {
     .filter((value) => value >= 20000);
   if (prices.length) {
     f.price = prices[0];
-    if (/\b(fino a|max|massimo|budget|non oltre)\b/.test(t)) f.priceMax = Math.max(...prices);
   }
+  const budget = budgetBounds(t);
+  f.priceMin = budget.min;
+  f.priceMax = budget.max;
 
   const floorText = { terra: 0, primo: 1, secondo: 2, terzo: 3, quarto: 4, quinto: 5, sesto: 6, settimo: 7 };
   for (const [word, value] of Object.entries(floorText)) {
@@ -195,20 +246,19 @@ export function extractFeatures(text = "") {
   if (/secondo piano o piu alto|dal secondo|almeno secondo/.test(t)) f.floorMin = 2;
   if (/no piano terra|non piano terra|esclud.*piano terra/.test(t)) f.excludedFloors.push(0);
 
-  f.terrace = featurePresence(t, "terrazz\\w*|spazio esterno");
+  f.terrace = featurePresence(t, AMENITY_PATTERNS.terrace);
   if (f.terrace) {
-    const terraceSize = t.match(/terrazz\w*\s*(?:di|da)?\s*(\d{2,3})\s*mq/);
-    if (terraceSize) f.terraceSize = Number(terraceSize[1]);
-    f.terraceLarge = /terrazz\w*.*(grande|ampio|abitabile|vivibile|spazioso)|spazio esterno/.test(t);
+    if (terraceAreas.length) f.terraceSize = Number(terraceAreas[0][1] || terraceAreas[0][2]);
+    f.terraceLarge = new RegExp(String.raw`\b(?:terrazz\w*\s+(?:${TERRACE_QUALITIES})|(?:${TERRACE_QUALITIES})\s+terrazz\w*|spazio esterno)\b`).test(t);
   }
   f.balcony = featurePresence(t, "balcon\\w*");
-  f.garden = featurePresence(t, "giardino|verde privato");
-  f.lift = featurePresence(t, "ascensore");
-  f.parking = featurePresence(t, "box|garage|posto auto");
+  f.garden = featurePresence(t, AMENITY_PATTERNS.garden);
+  f.lift = featurePresence(t, AMENITY_PATTERNS.lift);
+  f.parking = featurePresence(t, AMENITY_PATTERNS.parking);
   f.cellar = featurePresence(t, "cantina");
   f.pets = /no animali|niente animali/.test(t) ? false : /animali ammessi|animali ok|cane|gatto/.test(t) ? true : null;
-  f.bright = featurePresence(t, "luminos\\w*|esposizione (?:sud|est|ovest)");
-  f.quiet = featurePresence(t, "tranquill\\w*|silenzios\\w*");
+  f.bright = featurePresence(t, AMENITY_PATTERNS.bright);
+  f.quiet = featurePresence(t, AMENITY_PATTERNS.quiet);
   f.view = featurePresence(t, "vista|panoramic\\w*");
   f.renovated = featurePresence(t, "ristrutturat\\w*|nuovo|recente");
   f.zones = ZONES.filter((zone) => new RegExp(`\\b${zone.replace(/\s+/g, "\\s+")}\\b`).test(t));

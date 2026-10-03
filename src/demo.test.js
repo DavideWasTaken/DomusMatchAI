@@ -107,3 +107,51 @@ test("demo authentication notifies observers and unsubscribes cleanly", async ()
   assert.equal(users.length, 3);
   await assert.rejects(demo.storage.list("unknown"), /collection/i);
 });
+
+test("demo deletion removes linked matches while preserving unrelated records", async () => {
+  const demo = createDemoAdapter();
+  const clients = await demo.storage.list("clients");
+  const properties = await demo.storage.list("properties");
+  await demo.storage.save("matches", { id: "linked", clientId: clients[0].id, propertyId: properties[0].id });
+  await demo.storage.save("matches", { id: "unrelated", clientId: clients[1].id, propertyId: properties[1].id });
+  await demo.storage.remove("clients", clients[0].id);
+  assert.deepEqual((await demo.storage.list("matches")).map(row => row.id), ["unrelated"]);
+  assert.equal((await demo.storage.list("properties")).length, properties.length);
+  await demo.storage.remove("properties", properties[1].id);
+  assert.equal((await demo.storage.list("matches")).length, 0);
+});
+
+async function deletionContext(confirm) {
+  const listeners = {};
+  const demo = createDemoAdapter();
+  const context = uiContext({
+    window: { confirm }, storage: demo.storage,
+    document: { querySelector: () => ({}), addEventListener(type, callback) { listeners[type] = callback; } }
+  });
+  runInContext("state.user = {uid: 'demo-operator'}; renderShell = () => {}; toast = () => {};", context);
+  await runInContext("refreshFromCache()", context);
+  const id = (await demo.storage.list("clients"))[0].id;
+  const click = () => listeners.click({ target: { closest(selector) {
+    return selector === "[data-delete-client]" ? { dataset: { deleteClient: id } } : null;
+  } } });
+  return { demo, context, click, id };
+}
+
+test("canceling deletion confirmation keeps the client", async () => {
+  let asked = false;
+  const { demo, click, id } = await deletionContext(() => { asked = true; return false; });
+  await click();
+  assert.equal(asked, true);
+  assert.ok((await demo.storage.list("clients")).some(client => client.id === id));
+});
+
+test("an accepted deletion cannot run after its session changes", async () => {
+  let context;
+  const result = await deletionContext(() => {
+    runInContext("clearSessionData(); state.user = null", context);
+    return true;
+  });
+  context = result.context;
+  await result.click();
+  assert.ok((await result.demo.storage.list("clients")).some(client => client.id === result.id));
+});

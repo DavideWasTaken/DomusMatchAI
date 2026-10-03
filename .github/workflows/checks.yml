@@ -17,9 +17,20 @@ jobs:
           java-version: '21'
       - run: npm ci
       - run: npm test
+      - run: npm audit --audit-level=moderate
       - run: npm run test:rules
       - run: npm run build:frontend
       - run: npm run build:demo
+        env:
+          VITE_FIREBASE_API_KEY: demo-privacy-canary
+          VITE_FIREBASE_PROJECT_ID: demo-privacy-canary
+          VITE_FIREBASE_AUTH_DOMAIN: demo-privacy-canary.firebaseapp.com
+          VITE_FIREBASE_APP_ID: demo-privacy-canary
+      - run: npm run check:demo
+      - uses: actions/upload-pages-artifact@v4
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        with:
+          path: dist
   desktop:
     runs-on: windows-latest
     steps:
@@ -30,5 +41,23 @@ jobs:
           cache: npm
       - uses: dtolnay/rust-toolchain@stable
       - run: npm ci
+      - run: npm run format:rust:check
       - run: npm run build:frontend
       - run: cargo check --locked --manifest-path src-tauri/Cargo.toml
+      - name: Package Windows MSI (unsigned verification)
+        run: npm run build
+  demo-deploy:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: [javascript, desktop]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - uses: actions/configure-pages@v5
+      - uses: actions/deploy-pages@v4
+        id: deployment

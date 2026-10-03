@@ -266,6 +266,43 @@ test("supports a euro symbol before the amount", () => {
   assert.equal(extractFeatures("Prezzo richiesto € 450.000").price, 450000);
 });
 
+test("a textual minimum budget sets a lower bound without inventing a maximum", () => {
+  for (const text of ["Budget minimo 300.000 euro", "Budget min 300k", "Almeno 300 mila euro"]) {
+    const features = extractFeatures(text);
+    assert.equal(features.priceMin, 300000, text);
+    assert.equal(features.priceMax, null, text);
+    const match = scoreMatch({ id: "c", description: text }, { id: "p", price: 200000 });
+    assert.ok(match.reasons.some((r) => r.criterion === "Prezzo" && r.status === "bad"), text);
+  }
+});
+
+test("textual budget ranges retain both bounds for price scoring", () => {
+  for (const text of ["Budget da 300k a 450k", "Budget tra 300.000 e 450.000 euro", "Budget 300–450 mila"]) {
+    const features = extractFeatures(text);
+    assert.equal(features.priceMin, 300000, text);
+    assert.equal(features.priceMax, 450000, text);
+    for (const [price, expected] of [[200000, "bad"], [400000, "ok"], [500000, "bad"]]) {
+      const match = scoreMatch({ id: "c", description: text }, { id: "p", price });
+      assert.ok(match.reasons.some((r) => r.criterion === "Prezzo" && r.status === expected), `${text}: ${price}`);
+    }
+  }
+});
+
+test("budget bounds come from their own amount rather than unrelated maximum words", () => {
+  const features = extractFeatures("Budget minimo 300k, massimo 100 mq");
+  assert.equal(features.priceMin, 300000);
+  assert.equal(features.priceMax, null);
+  assert.equal(extractFeatures("Prezzo 430.000 euro, massimo 100 mq").priceMax, null);
+});
+
+test("textual maximums retain the supported price prefix and currency forms", () => {
+  for (const text of ["Prezzo massimo 450000", "Budget fino a 450000", "Massimo 450k", "Non oltre € 450.000"]) {
+    const features = extractFeatures(text);
+    assert.equal(features.priceMin, null, text);
+    assert.equal(features.priceMax, 450000, text);
+  }
+});
+
 test("missing preferred neighborhood remains unverified even when the municipality matches", () => {
   const match = scoreMatch({ id: "c", comune: "Milano", quartieri: ["Navigli"] }, { id: "p", comune: "Milano" });
   assert.ok(match.reasons.some((r) => r.criterion === "Comune" && r.status === "ok"));
@@ -278,9 +315,54 @@ test("large terrace requirement remains unverified when terrace size is missing"
   assert.ok(match.reasons.some((r) => r.criterion === "Terrazzo" && r.status === "unknown"));
 });
 
+test("large room adjectives cannot confirm the size of an unrelated terrace", () => {
+  for (const description of ["Terrazzo, soggiorno ampio", "Terrazzo e soggiorno spazioso", "Terrazzo. Cucina abitabile"]) {
+    assert.equal(extractFeatures(description).terraceLarge, false, description);
+    const match = scoreMatch({ id: "c", description: "Terrazzo abitabile" }, { id: "p", description });
+    assert.ok(match.reasons.some((r) => r.criterion === "Terrazzo" && r.status === "unknown"), description);
+  }
+});
+
+test("large terrace adjectives are recognized directly before or after the noun", () => {
+  for (const description of ["Ampio terrazzo", "Terrazza ampia", "Terrazzo abitabile", "Spaziosa terrazza"]) {
+    assert.equal(extractFeatures(description).terraceLarge, true, description);
+    const match = scoreMatch({ id: "c", description: "Terrazzo abitabile" }, { id: "p", description });
+    assert.ok(match.reasons.some((r) => r.criterion === "Terrazzo" && r.status === "ok"), description);
+  }
+});
+
 test("sqm maximum does not create an unintended minimum", () => {
   const match = scoreMatch({ id: "c", description: "Massimo 100 mq" }, { id: "p", sqm: 60 });
   assert.ok(match.reasons.some((r) => r.criterion === "Superficie" && r.status === "ok"));
+});
+
+test("an explicitly measured terrace does not supply the property surface", () => {
+  for (const text of ["Trilocale con terrazzo di 22 mq", "Terrazzo abitabile da 22 m²", "22 mq di terrazzo"]) {
+    const features = extractFeatures(text);
+    assert.equal(features.sqm, null, text);
+    assert.equal(features.sqmMin, null, text);
+    assert.equal(features.sqmMax, null, text);
+    assert.equal(features.terraceSize, 22, text);
+    const match = scoreMatch({ id: "c", sqmMin: 80 }, { id: "p", description: text });
+    assert.ok(match.reasons.some((r) => r.criterion === "Superficie" && r.status === "unknown"), text);
+  }
+});
+
+test("property surface and terrace size remain separate in either description order", () => {
+  for (const text of [
+    "Terrazzo abitabile di 22 mq, appartamento di 95 mq",
+    "Appartamento di 95 m² con terrazzo di 22 m2",
+    "Terrazzo da 22 mq. Cerco da 80 a 110 mq"
+  ]) {
+    const features = extractFeatures(text);
+    assert.equal(features.terraceSize, 22, text);
+    if (text.includes("Cerco")) {
+      assert.equal(features.sqmMin, 80);
+      assert.equal(features.sqmMax, 110);
+    } else {
+      assert.equal(features.sqm, 95, text);
+    }
+  }
 });
 
 test("always derives features from current source fields instead of stale or malformed caches", () => {
@@ -312,10 +394,57 @@ test("distinguishes unmentioned amenities from explicit Italian negations", () =
   assert.equal(extractFeatures("Terrazzo e giardino con box, ascensore, luminoso e silenzioso").terrace, true);
 });
 
+test("recognizes short explicit Italian verb phrases for an absent amenity", () => {
+  for (const description of [
+    "Non dispone di ascensore",
+    "Non ha l'ascensore",
+    "Non è presente un ascensore",
+    "Non è dotato di ascensore"
+  ]) {
+    assert.equal(extractFeatures(description).lift, false, description);
+    const match = scoreMatch({ id: "c", description: "Ascensore" }, { id: "p", description });
+    assert.ok(match.reasons.some((r) => r.criterion === "Ascensore" && r.status === "bad"), description);
+    assert.equal(match.score, 0, description);
+  }
+  assert.equal(extractFeatures("Dispone di un ascensore").lift, true);
+});
+
+test("explicit verb absence wins over a positive title and suppresses client requirements", () => {
+  const property = { id: "p", title: "Appartamento con ascensore", description: "Non dispone di ascensore" };
+  assert.equal(featuresFor(property).lift, false);
+  const client = { id: "c", description: "Non ha ascensore" };
+  assert.ok(!scoreMatch(client, property).reasons.some((r) => r.criterion === "Ascensore"));
+});
+
 test("explicit absence cannot earn a text similarity reward for the requested amenity", () => {
   const match = scoreMatch({ id: "c", description: "Terrazzo" }, { id: "p", description: "Senza terrazzo" });
   assert.ok(match.reasons.some((r) => r.criterion === "Terrazzo" && r.status === "bad"));
   assert.equal(match.score, 0);
+});
+
+test("every word in a denied multiword amenity is excluded from text similarity", () => {
+  for (const [description, criterion] of [
+    ["Posto auto", "Box"],
+    ["Verde privato", "Giardino"],
+    ["Spazio esterno", "Terrazzo"],
+    ["Esposizione sud", "Luminosita"]
+  ]) {
+    const match = scoreMatch({ id: "c", description }, { id: "p", description: `Senza ${description}` });
+    assert.ok(match.reasons.some((r) => r.criterion === criterion && r.status === "bad"), description);
+    assert.ok(!match.reasons.some((r) => r.criterion === "Similarita"), description);
+    assert.equal(match.score, 0, description);
+  }
+});
+
+test("a denied amenity cannot regain text similarity through a positive synonym in the title", () => {
+  const match = scoreMatch(
+    { id: "c", description: "Box" },
+    { id: "p", title: "Garage", description: "Senza posto auto" }
+  );
+  assert.ok(match.reasons.some((r) => r.criterion === "Box" && r.status === "bad"));
+  assert.equal(match.score, 0);
+  const present = scoreMatch({ id: "c", description: "Box" }, { id: "p", description: "Garage" });
+  assert.equal(present.score, 100);
 });
 
 test("unknown requested facts remain visible and earn no score or coverage", () => {
@@ -373,7 +502,7 @@ test("scores structured square meter min and max ranges", () => {
   assert.ok(bad.reasons.some((r) => r.criterion === "Superficie" && r.status === "bad"));
 });
 
-test("strict zone mode hard-excludes wrong comune", () => {
+test("strict zone mode heavily penalizes a wrong comune", () => {
   const client = {
     id: "c1",
     description: "Cerco trilocale",
@@ -390,7 +519,7 @@ test("strict zone mode hard-excludes wrong comune", () => {
   assert.ok(match.reasons.some((r) => r.criterion === "Comune" && r.status === "bad"));
 });
 
-test("strict zone mode hard-excludes wrong structured quartiere in the same comune", () => {
+test("strict zone mode heavily penalizes a different structured quartiere", () => {
   const client = {
     id: "c1",
     description: "Cerco trilocale con ascensore",
