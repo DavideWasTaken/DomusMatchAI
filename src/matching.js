@@ -63,7 +63,7 @@ const TERRACE_QUALITIES = "grande|ampio|ampia|abitabile|vivibile|spazioso|spazio
 const AMENITY_PATTERNS = {
   terrace: "terrazz\\w*|spazio esterno",
   garden: "giardino|verde privato",
-  lift: "ascensore",
+  lift: "ascensor[ei]",
   parking: "box|garage|posto auto",
   bright: "luminos\\w*|esposizione (?:sud|est|ovest)",
   quiet: "tranquill\\w*|silenzios\\w*"
@@ -142,8 +142,11 @@ function cosineSimilarity(leftText = "", rightText = "") {
 }
 
 function saleAmount(text, sharedUnit = "") {
-  const thousands = /k\b|mila\b/.test(text) || (!/euro\b/.test(text) && /k\b|mila\b/.test(sharedUnit));
-  const value = Number(text.replace(/\D/g, "")) * (thousands ? 1000 : 1);
+  const amount = Number(text.replace(/\D/g, ""));
+  // Inherit a trailing unit only for shorthand; a full sale amount already
+  // at or above the accepted threshold keeps its euro scale.
+  const thousands = /k\b|mila\b/.test(text) || (amount < 20000 && !/euro\b/.test(text) && /k\b|mila\b/.test(sharedUnit));
+  const value = amount * (thousands ? 1000 : 1);
   return value >= 20000 ? value : null;
 }
 

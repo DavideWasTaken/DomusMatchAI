@@ -1407,14 +1407,10 @@ document.addEventListener("click", async (event) => {
   }
   } catch (error) {
     if (error?.code === "partial-cleanup" && operationGeneration === sessionGeneration) {
-      await refreshFromCache();
-      if (operationGeneration !== sessionGeneration) return;
-      state.editingClientId = null;
-      state.editingPropertyId = null;
-      clearClientDrafts();
-      clearPropertyDrafts();
-      state.dataError = error.message;
-      renderShell();
+      // Stop ordinary snapshots so they cannot dismiss the recovery action.
+      // Retry subscribes again after the adapter resumes its pending cleanup.
+      handleDataChange(null, error);
+      return;
     }
     if (operationGeneration === sessionGeneration) toast(`Operazione non riuscita: ${error?.message || error}`);
   }

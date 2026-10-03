@@ -155,3 +155,43 @@ test("an accepted deletion cannot run after its session changes", async () => {
   await result.click();
   assert.ok((await result.demo.storage.list("clients")).some(client => client.id === result.id));
 });
+
+test("partial cleanup stops ordinary updates and keeps Retry until recovery", async () => {
+  const demo = createDemoAdapter();
+  const listeners = {};
+  let listening = true;
+  let stops = 0;
+  let retries = 0;
+  const partial = Object.assign(new Error("Record eliminato. Pulizia interrotta: usa Riprova."), { code: "partial-cleanup" });
+  const context = uiContext({
+    window: { confirm: () => true },
+    storage: { ...demo.storage, async remove(kind, id) {
+      await demo.storage.remove(kind, id);
+      throw partial;
+    } },
+    stop() { listening = false; stops++; },
+    subscribe(callback) { listening = true; retries++; callback("clients", null); },
+    document: { querySelector: () => ({}), addEventListener(type, callback) { listeners[type] = callback; } }
+  });
+  runInContext("state.user = {uid: 'demo-operator'}; state.dataLoaded = true; renderShell = () => {}; toast = () => {};", context);
+  await runInContext("refreshFromCache()", context);
+  const id = (await demo.storage.list("clients"))[0].id;
+  await listeners.click({ target: { closest(selector) {
+    return selector === "[data-delete-client]" ? { dataset: { deleteClient: id } } : null;
+  } } });
+  assert.equal(runInContext("state.dataError", context), partial.message);
+  // A successful unrelated update must not dismiss an unresolved cleanup.
+  if (listening) runInContext("handleDataChange('properties', null)", context);
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(runInContext("state.dataError", context), partial.message);
+  assert.equal(stops, 1);
+  assert.match(runInContext("renderDataError()", context), /retry-load/);
+  await listeners.click({ target: { closest(selector) {
+    return selector === "[data-action]" ? { dataset: { action: "retry-load" } } : null;
+  } } });
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(retries, 1);
+  assert.equal(runInContext("state.dataError", context), null);
+  assert.equal(runInContext("state.dataLoaded", context), true);
+  assert.ok(!runInContext("state.clients", context).some(client => client.id === id));
+});

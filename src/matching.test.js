@@ -288,6 +288,26 @@ test("textual budget ranges retain both bounds for price scoring", () => {
   }
 });
 
+for (const text of ["Budget da 300.000 a 450k", "Budget da 300 000 a 450 mila", "Budget 300000-450 mila"]) {
+  test(`mixed budget units preserve an already full sale amount: ${text}`, () => {
+    const features = extractFeatures(text);
+    assert.equal(features.priceMin, 300000);
+    assert.equal(features.priceMax, 450000);
+    for (const [price, expected] of [[200000, "bad"], [400000, "ok"], [500000, "bad"]]) {
+      const match = scoreMatch({ id: "c", description: text }, { id: "p", price });
+      assert.ok(match.reasons.some((r) => r.criterion === "Prezzo" && r.status === expected), `${price}`);
+    }
+  });
+}
+
+test("shared budget shorthand and explicit amount units retain their scale", () => {
+  for (const text of ["Budget 300-450 mila", "Budget 300k-450 mila", "Budget 300 mila a 450.000 euro"]) {
+    const features = extractFeatures(text);
+    assert.equal(features.priceMin, 300000, text);
+    assert.equal(features.priceMax, 450000, text);
+  }
+});
+
 test("budget bounds come from their own amount rather than unrelated maximum words", () => {
   const features = extractFeatures("Budget minimo 300k, massimo 100 mq");
   assert.equal(features.priceMin, 300000);
@@ -445,6 +465,22 @@ test("a denied amenity cannot regain text similarity through a positive synonym 
   assert.equal(match.score, 0);
   const present = scoreMatch({ id: "c", description: "Box" }, { id: "p", description: "Garage" });
   assert.equal(present.score, 100);
+});
+
+test("a plural lift alias cannot restore similarity after explicit lift absence", () => {
+  const match = scoreMatch(
+    { id: "c", description: "Ascensore" },
+    { id: "p", title: "Ascensori moderni", description: "Non dispone di ascensore" }
+  );
+  assert.ok(match.reasons.some((r) => r.criterion === "Ascensore" && r.status === "bad"));
+  assert.ok(!match.reasons.some((r) => r.criterion === "Similarita"));
+  assert.equal(match.score, 0);
+});
+
+test("an explicitly positive plural lift mention remains usable", () => {
+  assert.equal(extractFeatures("Ascensori moderni").lift, true);
+  const match = scoreMatch({ id: "c", description: "Ascensore" }, { id: "p", description: "Ascensori moderni" });
+  assert.ok(match.reasons.some((r) => r.criterion === "Ascensore" && r.status === "ok"));
 });
 
 test("unknown requested facts remain visible and earn no score or coverage", () => {
