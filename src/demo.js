@@ -63,7 +63,18 @@ export function createDemoAdapter() {
       async remove(kind, id) {
         requireUser();
         collection(kind).delete(id);
+        const field = kind === "clients" ? "clientId" : kind === "properties" ? "propertyId" : null;
+        let removedMatches = false;
+        if (field) {
+          for (const [matchId, match] of records.matches) {
+            if (match[field] === id) {
+              records.matches.delete(matchId);
+              removedMatches = true;
+            }
+          }
+        }
         onChange?.(kind, null);
+        if (removedMatches) onChange?.("matches", null);
       }
     }
   };

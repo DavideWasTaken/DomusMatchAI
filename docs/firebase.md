@@ -37,8 +37,8 @@ Keep `.env` out of Git. Restart Vite after editing it; rebuild desktop installer
 In **Firestore Database → Rules**, replace the existing rules with the contents of [`firestore.rules`](../firestore.rules) and click **Publish**. Alternatively, from the project directory:
 
 ```bash
-npx firebase login
-npx firebase deploy --only firestore:rules --project YOUR_PROJECT_ID
+npx --yes firebase-tools@15.32.1 login
+npx --yes firebase-tools@15.32.1 deploy --only firestore:rules --project YOUR_PROJECT_ID
 ```
 
 Deploy only to a project you manage. The repository intentionally contains no default production project alias.
@@ -48,6 +48,7 @@ The rules:
 - Deny agency-data access to signed-out users and unapproved/revoked operators.
 - Allow active members to read, create, update and delete records in `clients`, `properties` and `matches`.
 - Require saved records to include the current operator's `updatedBy` UID and an `updatedAt` string, which the adapter adds.
+- Require every new/updated match to reference a client and property that exist after its write batch.
 - Allow a signed-in user to read only their own membership document, so the app can react to access changes.
 - Deny membership listing and all client-side membership writes, and deny unrelated collections.
 
@@ -106,6 +107,7 @@ The public application's identifier is `com.davidewastaken.domusmatchai`. It has
 - Authentication uses browser-session persistence. Firestore record caching is in memory, not a persistent browser database. Initial data display waits for server-confirmed membership and snapshots.
 - Use an online connection for shared work. When disconnected, already displayed records can be stale and writes may await reconnection; offline startup and durable offline work are not supported.
 - Edits replace the record: if two operators change the same item concurrently, **the last accepted write wins**. There is no merge UI, version conflict handling or full audit history.
+- Deletes require confirmation, use a server lookup, and batch-delete the source with up to 499 matches. With 500+ linked matches deletion is refused. A follow-up query cleans concurrent matches; interrupted cleanup reports a partial result and retries for the same operator in the same loaded page. Closing that page can leave orphan matches for an administrator to remove; views/exports ignore them. See [delete boundaries](architecture.md#delete-boundaries).
 - Exported spreadsheets contain the records shown to the operator. Handle and store them accordingly. Arrange backups separately; an application export is not an automatic backup policy.
 
 This public edition does not silently enable persistent storage of personal data. Firebase documents the implications of disk caching in its [offline data guide](https://firebase.google.com/docs/firestore/manage-data/enable-offline).
@@ -118,7 +120,16 @@ Install Java **21+**, ensure `java -version` selects it, then:
 npm run test:rules
 ```
 
-The command starts Firestore on `127.0.0.1:8085`, loads the included rules, tests fictional accounts/records, and shuts the emulator down. It uses `demo-domusmatchai`; no Firebase login or real project is needed. Intentional `PERMISSION_DENIED` logs are expected for denial tests. [Firebase emulator guidance](https://firebase.google.com/docs/emulator-suite/connect_firestore).
+The command invokes pinned Firebase CLI 15.32.1 through `npx`, starts Auth on
+`127.0.0.1:9098` and Firestore on `127.0.0.1:8085`, and tests both the rules
+and real adapter using fictional accounts/records. It shuts both emulators down.
+It uses `demo-domusmatchai`; no Firebase login or real project is needed.
+Intentional `PERMISSION_DENIED` logs are expected for denial tests.
+[Firebase emulator guidance](https://firebase.google.com/docs/emulator-suite/connect_firestore).
+
+The CLI is fetched separately to keep the app/demo install small. Its own
+transitive dependencies are outside the app's `npm audit`; treat it as a
+separate administration tool and review upgrades before production use.
 
 ## Troubleshooting
 

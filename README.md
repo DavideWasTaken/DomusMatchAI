@@ -2,11 +2,18 @@
 
 # DomusMatchAI
 
-**A simple workspace for matching people with properties.**
+[![Checks](https://github.com/DavideWasTaken/DomusMatchAI/actions/workflows/checks.yml/badge.svg)](https://github.com/DavideWasTaken/DomusMatchAI/actions/workflows/checks.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-0f766e.svg)](LICENSE)
+![JavaScript](https://img.shields.io/badge/JavaScript-ES2022-f7df1e.svg)
+![Tauri 2](https://img.shields.io/badge/Desktop-Tauri_2-24c8db.svg)
 
-Originally built for a private real-estate agency with **three branches**, DomusMatchAI brings client requests, available properties and explainable matching into one shared workspace. This repository is a cleaned, independently configured edition of that application, with fictional demo data.
+**Turn a client's request into a property shortlist—with reasons you can read.**
 
-The interface is in Italian. The scope is intentionally small: help agency staff keep track of requests and find relevant properties without a complicated CRM workflow.
+DomusMatchAI brings client requests, available properties and explainable local matching into a small shared workspace. Built around the workflow of a real agency with three branches, this public edition uses its own configuration and fictional demo records.
+
+**[Open the live demo](https://davidewastaken.github.io/DomusMatchAI/) · [Matching rules](docs/matching.md) · [Firebase setup](docs/firebase.md)**
+
+No account or setup needed for the demo. The interface is in Italian; all demo changes stay in memory and reset on reload.
 
 ![Matching a client request with available properties](docs/images/matching.png)
 
@@ -26,6 +33,20 @@ The interface is in Italian. The scope is intentionally small: help agency staff
 The current matching engine runs **locally**, using Italian text extraction, structured fields and weighted rules. It needs **no LLM, API key for AI or paid model service**. Firebase is only needed for the shared, authenticated workspace.
 
 Every score comes with explanations. Missing information earns no matching credit and is shown separately from an explicit mismatch. “Criteria coverage” indicates how many evaluated criteria have known information; it is not a probability or statistical confidence. Read the [matching rules and limitations](docs/matching.md).
+
+### A concrete example
+
+The included Riva request asks for a trilocale in Milano/Navigli, EUR 350–450k, 80–110 mq, a usable terrace, lift and parking; it excludes the ground floor. The current engine produces:
+
+| Fictional property | Rule score | What the operator sees |
+| --- | ---: | --- |
+| Navigli · 92 mq · EUR 430k | 100 | Location, budget, size and requested amenities supported by the record |
+| Isola · 58 mq · EUR 295k | 30 | Wrong neighborhood, below the requested budget/size range, no parking; terrace unknown |
+| Torino · 55 mq · EUR 510k | 0 | Wrong municipality, over budget, too small, ground floor and missing amenities |
+
+These are scores for one request, not sale probabilities. Changing the request changes the evaluated criteria. Rankings and exports recompute current facts instead of trusting saved scores.
+
+The parser also keeps `budget minimo 300k` distinct from a maximum, separates `terrazzo di 22 mq` from apartment area, and treats `non dispone di ascensore` or `senza posto auto` as explicit absence. These behaviors have regression tests, including contradictory descriptions and missing information.
 
 ## Try the demo
 
@@ -88,11 +109,14 @@ The public edition has its own application identifier and does not import or con
 | `npm run test:rules` | Firestore access tests in the local emulator; requires Java 21+ |
 | `npm run build:frontend` | Build the Firebase-enabled frontend |
 | `npm run build:demo` | Build the standalone demo frontend |
+| `npm run check:demo` | Verify the built demo excludes Firebase and works on a project subpath |
 | `npm run preview` | Preview the last frontend build locally |
 | `npm run desktop:dev` | Run the Tauri desktop shell |
 | `npm run build` | Build the configured Windows desktop installer |
 
-CI checks JavaScript tests, Firestore rules, frontend builds and the Windows Rust shell. Rules tests use the `demo-domusmatchai` emulator project and require no production credentials.
+CI checks JavaScript regressions, the actual Firebase adapter and access rules against Auth/Firestore emulators, dependency audit, both frontend builds, Rust formatting/checks and unsigned Windows MSI packaging. It also checks that dummy Firebase configuration cannot leak into the demo bundle. The live demo deploys only after the checks pass on `main`.
+
+Rules/adapter tests use the `demo-domusmatchai` project and require Java 21+, with no Firebase login or production credentials. The pinned Firebase CLI runs through `npx` only when needed; it is not an app dependency. The app's npm audit does not include that external CLI's own dependency tree.
 
 ## Architecture and scope
 
@@ -111,7 +135,13 @@ flowchart LR
 
 This is a small agency tool. It has no portal scraping, automatic messages, property valuation, appointment calendar or complete audit history. Concurrent edits to the same record use last-write-wins. Online access is required to establish an authorized shared-data session; the public edition uses memory-only record caching. Locations are entered manually.
 
+Deletes require confirmation and remove the source plus up to 499 linked matches in one batch. New orphan matches are rejected by the rules; a second server query handles matches created during deletion. Interrupted cleanup is retried in the same page and reported explicitly. Closing that page loses the memory-only retry ticket, so an administrator may need to remove leftover orphan matches. Larger deletes are refused before removing the source.
+
+For real agency data, configure and deploy your own Firebase project and rules, approve `members/{uid}.active`, arrange backups, and test a configured, signed installer on staff devices. CI packaging is a build check, not a customer deployment certification.
+
 See [architecture and operational limits](docs/architecture.md), [Firebase setup](docs/firebase.md) and [matching details](docs/matching.md).
+
+Small improvements and reproducible bug reports are welcome; see [contributing](CONTRIBUTING.md) and [security guidance](SECURITY.md).
 
 ## Author and license
 

@@ -1158,6 +1158,7 @@ async function refreshFromCache() {
 }
 
 function handleDataChange(_kind, error) {
+  const current = sessionGeneration;
   if (error) {
     stop();
     clearSessionData();
@@ -1166,14 +1167,16 @@ function handleDataChange(_kind, error) {
     return;
   }
   refreshFromCache().then((accepted) => {
-    if (!accepted) return;
+    if (!accepted || current !== sessionGeneration) return;
     const wasLoaded = state.dataLoaded;
     state.dataLoaded = true;
     state.dataError = null;
     const editing = document.activeElement && document.activeElement.matches
       && document.activeElement.matches("input, textarea, select");
     if (!wasLoaded || (!editing && !state.accountOpen)) renderShell();
-  }).catch(error => handleDataChange(_kind, error));
+  }).catch(error => {
+    if (current === sessionGeneration) handleDataChange(_kind, error);
+  });
 }
 
 async function start() {
@@ -1384,7 +1387,9 @@ document.addEventListener("click", async (event) => {
   const deleteClient = event.target.closest("[data-delete-client]")?.dataset.deleteClient;
   if (deleteClient) {
     const row = state.clients.find((client) => client.id === deleteClient);
-    await storage.remove("clients", deleteClient, row?._version || null);
+    if (!row || !window.confirm(`Eliminare il cliente "${row.name}" e i suoi match?`)) return;
+    if (operationGeneration !== sessionGeneration) return;
+    await storage.remove("clients", deleteClient);
     await refreshFromCache();
     if (operationGeneration !== sessionGeneration) return;
     state.editingClientId = null;
@@ -1394,7 +1399,9 @@ document.addEventListener("click", async (event) => {
   const deleteProperty = event.target.closest("[data-delete-property]")?.dataset.deleteProperty;
   if (deleteProperty) {
     const row = state.properties.find((property) => property.id === deleteProperty);
-    await storage.remove("properties", deleteProperty, row?._version || null);
+    if (!row || !window.confirm(`Eliminare l'immobile "${row.title}" e i suoi match?`)) return;
+    if (operationGeneration !== sessionGeneration) return;
+    await storage.remove("properties", deleteProperty);
     await refreshFromCache();
     if (operationGeneration !== sessionGeneration) return;
     state.editingPropertyId = null;
@@ -1402,6 +1409,12 @@ document.addEventListener("click", async (event) => {
     renderShell();
   }
   } catch (error) {
+    if (error?.code === "partial-cleanup" && operationGeneration === sessionGeneration) {
+      // Stop ordinary snapshots so they cannot dismiss the recovery action.
+      // Retry subscribes again after the adapter resumes its pending cleanup.
+      handleDataChange(null, error);
+      return;
+    }
     if (operationGeneration === sessionGeneration) toast(`Operazione non riuscita: ${error?.message || error}`);
   }
 });

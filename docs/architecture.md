@@ -17,7 +17,7 @@ DomusMatchAI is a small shared-agency application, originally developed for a pr
 - One Firebase project represents one agency. Operators share records; three branches describes the original use case, not a branch-specific authorization model.
 - Matching has no model API. Italian text parsing is limited and scores require human review.
 - Notes are stored and displayed but excluded from matching extraction and text similarity.
-- Scores displayed in rankings, messages, badges and exports are recalculated using current records and current filters. Stored matches are not an immutable historical record; orphaned stored rows are ignored after their client/property is deleted.
+- Scores displayed in rankings, messages, badges and exports are recalculated using current records and current filters. Stored matches are not an immutable historical record. Deletes ask for confirmation and cascade to linked matches; remaining orphan rows are excluded from views and exports.
 - Messages are copied to the clipboard for manual review. The application never sends them to clients.
 - Export uses SpreadsheetML XML with an `.xls` extension for compatibility; it is not a native `.xlsx` file. Some spreadsheet software may warn about the extension/format. Values are written as typed XML cells, not executable spreadsheet formulas.
 - Location fields are manual. The public Nominatim service [does not permit client-side autocomplete](https://operations.osmfoundation.org/policies/nominatim/); this edition makes no requests to it. There is no geocoding, distance ranking or address verification.
@@ -29,6 +29,30 @@ DomusMatchAI is a small shared-agency application, originally developed for a pr
 `npm run demo` / `npm run build:demo` select the isolated demo at build time. Merely appending a query parameter to the production app cannot select the demo adapter. Reloading demo restores the fixtures; signing out and re-entering within the same loaded page preserves that page's in-memory changes.
 
 `npm run dev` / `npm run build:frontend` select Firebase. A project must be configured before using the authenticated workspace. Tauri's normal desktop build embeds this configured frontend; the browser demo is the quickest credential-free way to evaluate the project.
+
+The [hosted demo](https://davidewastaken.github.io/DomusMatchAI/) uses only
+`build:demo`. CI builds it with dummy Firebase values and verifies that the
+cloud adapter/configuration is absent from the artifact. Relative asset paths
+support GitHub Pages project URLs and the Tauri bundle. Deployment waits for
+the JavaScript/emulator and Windows packaging jobs on `main`.
+
+## Delete boundaries
+
+The shared adapter queries linked matches from the server and atomically
+deletes their source plus up to 499 matches. With 500 or more matches it
+refuses before removing the source. Initial lookup requires an online session;
+an interrupted commit is subject to Firestore's acknowledgement/reconnect flow.
+
+Rules check match sources after a write batch, preventing creation/update of a
+match whose source was deleted. A second query removes matches accepted in the
+interval between the first lookup and source deletion. If this cleanup fails,
+the UI reports a partial cleanup and offers Retry. Memory-only recovery tickets
+are retried when the same operator reconnects within that loaded page.
+
+Closing/reloading the page loses those tickets. An administrator may need to
+remove residual orphan matches after such an interruption or administrative
+database changes. Cascade is not an unconditional referential-integrity
+guarantee. Operators never gain project-administration or membership privileges.
 
 ## Maintenance
 

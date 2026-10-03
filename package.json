@@ -12,10 +12,12 @@
     "build": "tauri build",
     "build:frontend": "vite build",
     "build:demo": "vite build --mode demo",
+    "check:demo": "node scripts/check-demo.mjs",
     "preview": "vite preview --host 127.0.0.1",
     "test": "node --test src/*.test.js",
     "test:matching": "node --test src/matching.test.js",
-    "test:rules": "firebase emulators:exec --only firestore --project demo-domusmatchai \"node --test tests/firestore.rules.test.js\"",
+    "test:rules": "npx --yes firebase-tools@15.32.1 emulators:exec --only auth,firestore --project demo-domusmatchai \"node --import ./tests/register-env.js --test --test-concurrency=1 tests/firestore.rules.test.js tests/firebase.test.js\"",
+    "format:rust:check": "cargo fmt --manifest-path src-tauri/Cargo.toml -- --check",
     "check": "tauri info"
   },
   "dependencies": {
@@ -25,10 +27,13 @@
   "devDependencies": {
     "@firebase/rules-unit-testing": "^4.0.1",
     "@tauri-apps/cli": "^2.2.0",
-    "firebase-tools": "^15.31.0",
+    "fake-indexeddb": "^6.2.5",
     "vite": "^6.4.3"
   },
   "description": "A simple shared real-estate workspace with explainable local matching",
+  "overrides": {
+    "@grpc/grpc-js": "^1.13.6"
+  },
   "engines": {
     "node": ">=22.0.0"
   }

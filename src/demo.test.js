@@ -107,3 +107,133 @@ test("demo authentication notifies observers and unsubscribes cleanly", async ()
   assert.equal(users.length, 3);
   await assert.rejects(demo.storage.list("unknown"), /collection/i);
 });
+
+test("demo deletion removes linked matches while preserving unrelated records", async () => {
+  const demo = createDemoAdapter();
+  const clients = await demo.storage.list("clients");
+  const properties = await demo.storage.list("properties");
+  await demo.storage.save("matches", { id: "linked", clientId: clients[0].id, propertyId: properties[0].id });
+  await demo.storage.save("matches", { id: "unrelated", clientId: clients[1].id, propertyId: properties[1].id });
+  await demo.storage.remove("clients", clients[0].id);
+  assert.deepEqual((await demo.storage.list("matches")).map(row => row.id), ["unrelated"]);
+  assert.equal((await demo.storage.list("properties")).length, properties.length);
+  await demo.storage.remove("properties", properties[1].id);
+  assert.equal((await demo.storage.list("matches")).length, 0);
+});
+
+async function deletionContext(confirm) {
+  const listeners = {};
+  const demo = createDemoAdapter();
+  const context = uiContext({
+    window: { confirm }, storage: demo.storage,
+    document: { querySelector: () => ({}), addEventListener(type, callback) { listeners[type] = callback; } }
+  });
+  runInContext("state.user = {uid: 'demo-operator'}; renderShell = () => {}; toast = () => {};", context);
+  await runInContext("refreshFromCache()", context);
+  const id = (await demo.storage.list("clients"))[0].id;
+  const click = () => listeners.click({ target: { closest(selector) {
+    return selector === "[data-delete-client]" ? { dataset: { deleteClient: id } } : null;
+  } } });
+  return { demo, context, click, id };
+}
+
+test("canceling deletion confirmation keeps the client", async () => {
+  let asked = false;
+  const { demo, click, id } = await deletionContext(() => { asked = true; return false; });
+  await click();
+  assert.equal(asked, true);
+  assert.ok((await demo.storage.list("clients")).some(client => client.id === id));
+});
+
+test("an accepted deletion cannot run after its session changes", async () => {
+  let context;
+  const result = await deletionContext(() => {
+    runInContext("clearSessionData(); state.user = null", context);
+    return true;
+  });
+  context = result.context;
+  await result.click();
+  assert.ok((await result.demo.storage.list("clients")).some(client => client.id === result.id));
+});
+
+test("partial cleanup stops ordinary updates and keeps Retry until recovery", async () => {
+  const demo = createDemoAdapter();
+  const listeners = {};
+  let listening = true;
+  let stops = 0;
+  let retries = 0;
+  const partial = Object.assign(new Error("Record eliminato. Pulizia interrotta: usa Riprova."), { code: "partial-cleanup" });
+  const context = uiContext({
+    window: { confirm: () => true },
+    storage: { ...demo.storage, async remove(kind, id) {
+      await demo.storage.remove(kind, id);
+      throw partial;
+    } },
+    stop() { listening = false; stops++; },
+    subscribe(callback) { listening = true; retries++; callback("clients", null); },
+    document: { querySelector: () => ({}), addEventListener(type, callback) { listeners[type] = callback; } }
+  });
+  runInContext("state.user = {uid: 'demo-operator'}; state.dataLoaded = true; renderShell = () => {}; toast = () => {};", context);
+  await runInContext("refreshFromCache()", context);
+  const id = (await demo.storage.list("clients"))[0].id;
+  await listeners.click({ target: { closest(selector) {
+    return selector === "[data-delete-client]" ? { dataset: { deleteClient: id } } : null;
+  } } });
+  assert.equal(runInContext("state.dataError", context), partial.message);
+  // A successful unrelated update must not dismiss an unresolved cleanup.
+  if (listening) runInContext("handleDataChange('properties', null)", context);
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(runInContext("state.dataError", context), partial.message);
+  assert.equal(stops, 1);
+  assert.match(runInContext("renderDataError()", context), /retry-load/);
+  await listeners.click({ target: { closest(selector) {
+    return selector === "[data-action]" ? { dataset: { action: "retry-load" } } : null;
+  } } });
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(retries, 1);
+  assert.equal(runInContext("state.dataError", context), null);
+  assert.equal(runInContext("state.dataLoaded", context), true);
+  assert.ok(!runInContext("state.clients", context).some(client => client.id === id));
+});
+
+test("an already accepted refresh cannot erase a later partial-cleanup error", async () => {
+  const demo = createDemoAdapter();
+  const listeners = {};
+  const partial = Object.assign(new Error("Record eliminato. Usa Riprova."), { code: "partial-cleanup" });
+  const context = uiContext({
+    window: { confirm: () => true }, stop() {},
+    storage: { ...demo.storage, async remove(kind, id) {
+      await demo.storage.remove(kind, id);
+      runInContext("handleDataChange('properties', null)", context);
+      // Let refreshFromCache accept this generation before its UI continuation.
+      await Promise.resolve();
+      await Promise.resolve();
+      throw partial;
+    } },
+    document: { querySelector: () => ({}), addEventListener(type, callback) { listeners[type] = callback; } }
+  });
+  runInContext("state.user = {uid: 'demo-operator'}; state.dataLoaded = true; renderShell = () => {}; toast = () => {};", context);
+  await runInContext("refreshFromCache()", context);
+  const id = (await demo.storage.list("clients"))[0].id;
+  await listeners.click({ target: { closest(selector) {
+    return selector === "[data-delete-client]" ? { dataset: { deleteClient: id } } : null;
+  } } });
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(runInContext("state.dataError", context), partial.message);
+  assert.equal(runInContext("state.dataLoaded", context), false);
+});
+
+test("a rejected refresh from an old session cannot clear the new session", async () => {
+  let reject;
+  const waiting = new Promise((_resolve, fail) => { reject = fail; });
+  const context = uiContext({ stop() {}, storage: { list: () => waiting } });
+  runInContext(`state.user = {uid: 'old'}; renderShell = () => {};
+    handleDataChange('clients', null); clearSessionData();
+    state.user = {uid: 'new'}; state.dataLoaded = true;
+    state.clients = [{id: 'new-client'}];`, context);
+  reject(new Error("Old connection failed"));
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(runInContext("state.dataError", context), null);
+  assert.equal(runInContext("state.dataLoaded", context), true);
+  assert.equal(runInContext("state.clients[0]?.id", context), "new-client");
+});

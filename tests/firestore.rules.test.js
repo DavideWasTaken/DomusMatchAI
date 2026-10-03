@@ -1,7 +1,7 @@
 import { after, before, beforeEach, test } from 'node:test';
 import { readFile } from 'node:fs/promises';
 import { initializeTestEnvironment, assertFails, assertSucceeds } from '@firebase/rules-unit-testing';
-import { doc, setDoc, getDoc, deleteDoc, collection, getDocs } from 'firebase/firestore';
+import { doc, setDoc, getDoc, deleteDoc, collection, getDocs, writeBatch } from 'firebase/firestore';
 
 let env;
 before(async () => {
@@ -19,7 +19,7 @@ beforeEach(async () => {
     await setDoc(doc(db, 'members', 'second-branch'), { active: true });
     await setDoc(doc(db, 'members', 'revoked'), { active: false });
     for (const kind of ['clients', 'properties', 'matches']) {
-      await setDoc(doc(db, kind, 'example'), { title: 'Synthetic record', updatedAt: '2026-01-01', updatedBy: 'operator' });
+      await setDoc(doc(db, kind, 'example'), { title: 'Synthetic record', updatedAt: '2026-01-01', updatedBy: 'operator', ...(kind === 'matches' ? { clientId: 'example', propertyId: 'example' } : {}) });
     }
   });
 });
@@ -42,7 +42,7 @@ test('active operators share only the three intended collections', async () => {
   const db = env.authenticatedContext('operator').firestore();
   for (const kind of ['clients', 'properties', 'matches']) {
     await assertSucceeds(getDocs(collection(db, kind)));
-    await assertSucceeds(setDoc(doc(db, kind, 'new'), { name: 'Synthetic', updatedAt: '2026-01-01', updatedBy: 'operator' }));
+    await assertSucceeds(setDoc(doc(db, kind, 'new'), { name: 'Synthetic', updatedAt: '2026-01-01', updatedBy: 'operator', ...(kind === 'matches' ? { clientId: 'new', propertyId: 'new' } : {}) }));
     await assertSucceeds(deleteDoc(doc(db, kind, 'example')));
   }
   await assertFails(setDoc(doc(db, 'unexpected', 'new'), { updatedBy: 'operator' }));
@@ -77,4 +77,22 @@ test('revoking membership blocks subsequent access for an already signed-in user
   });
   await assertFails(getDoc(doc(db, 'clients', 'example')));
   await assertFails(deleteDoc(doc(db, 'clients', 'example')));
+});
+
+test('matches must reference existing clients and properties', async () => {
+  const db = env.authenticatedContext('operator').firestore();
+  const metadata = { updatedBy: 'operator', updatedAt: '2026-01-01' };
+  await assertFails(setDoc(doc(db, 'matches', 'orphan'), { ...metadata, clientId: 'missing', propertyId: 'example' }));
+  await assertFails(setDoc(doc(db, 'matches', 'orphan'), { ...metadata, clientId: 'example', propertyId: 'missing' }));
+  await assertFails(setDoc(doc(db, 'matches', 'orphan'), { ...metadata }));
+});
+
+test('a batch cannot delete a match parent and create a new linked match', async () => {
+  const db = env.authenticatedContext('operator').firestore();
+  const batch = writeBatch(db);
+  batch.delete(doc(db, 'clients', 'example'));
+  batch.set(doc(db, 'matches', 'late'), { clientId: 'example', propertyId: 'example', updatedBy: 'operator', updatedAt: '2026-01-01' });
+  await assertFails(batch.commit());
+  const parent = await assertSucceeds(getDoc(doc(db, 'clients', 'example')));
+  if (!parent.exists()) throw new Error('Failed batch removed its parent');
 });
